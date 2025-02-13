@@ -5,26 +5,21 @@ import requests
 from typing import Dict, Any, Optional
 import time
 
-# Core libraries
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-# Web scraping and search
 import together  
 
 # Load environment variables
 load_dotenv()
-
 
 class NewsVerificationAgent:
     def __init__(self):
         """
         Initialize the NewsVerificationAgent with API clients and configurations.
         """
-        # API Keys
         self.together_api_key = os.getenv("TOGETHER_API_KEY")
 
-        # Initialize Together AI client for LLM verification
         self.llm = together.Together(api_key=self.together_api_key)
 
     def scrape_website(self, url: str) -> Optional[str]:
@@ -48,20 +43,16 @@ class NewsVerificationAgent:
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Remove unnecessary elements
             for script in soup(["script", "style", "nav", "header", "footer"]):
                 script.decompose()
 
-            # Extract main content
             main_content = soup.find_all(['article', 'div'], class_=re.compile(r'(article|content|main|body)'))
 
             if not main_content:
                 main_content = [soup.body]
 
-            # Extract text
             text = ' '.join([elem.get_text(strip=True) for elem in main_content])
 
-            # Clean and limit text
             text = re.sub(r'\s+', ' ', text)
             return text[:5000]
 
@@ -81,7 +72,6 @@ class NewsVerificationAgent:
         Returns:
             Dict[str, Any]: Verification results including confidence score, matches, discrepancies.
         """
-        # Scrape website content
         scraped_content = self.scrape_website(source_url)
 
         if not scraped_content:
@@ -91,7 +81,6 @@ class NewsVerificationAgent:
                 "error": "Unable to scrape website content"
             }
 
-        # Verify content using LLM
         verification_result = self._verify_content(scraped_content, description)
 
         return verification_result
@@ -110,22 +99,44 @@ class NewsVerificationAgent:
         if not self.llm:
             return {
                 "confidence_score": 0.5,
-                "isVerified": False,  # Add the isVerified flag
+                "isVerified": False, 
                 "matching_details": [],
                 "discrepancies": ["LLM not available for advanced verification"]
             }
 
-        retry_count = 4  # Maximum number of retries
+        retry_count = 4  
         attempt = 0
         while attempt < retry_count:
             try:
-                # Construct messages in Together AI format
                 messages = [
-                    {"role": "system", "content": "You are a fact-checking AI. Compare the scraped content with the original news description and return a JSON output. The JSON format must include: confidence_score (float between 0 and 1), matching_details (list of strings), and discrepancies (list of strings)."},
-                    {"role": "user", "content": f"Scraped Content: {scraped_content[:1000]}\n\nOriginal Description: {original_description}\n\nProvide output in JSON format."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a fact-checking AI tasked with comparing scraped content from a news source with the original news description. "
+                            "Your job is to calculate a confidence score based on how closely the scraped content matches the original description.if original description matches with scraped content then confidence score should be 0.8"
+                            "The confidence score should be a float between 0 and 1. Severe discrepancies, such as factual mismatches (e.g., location or numbers), "
+                            "should significantly lower the score. Provide the following JSON output format:\n"
+                            "{\n"
+                            '  "confidence_score": (float, between 0 and 1),\n'
+                            '  "matching_details": (list of strings describing matches),\n'
+                            '  "discrepancies": (list of strings describing mismatches)\n'
+                            "}\n"
+                            "Important: Penalize factual discrepancies (like location or numbers) heavily, and use the following scale for guidance:\n"
+                            "- 0.8 to 1.0: Almost perfect match with very minor or no discrepancies.\n"
+                            "Respond only with JSON."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Scraped Content: {scraped_content[:1000]}\n\n"
+                            f"Original Description: {original_description}\n\n"
+                            "Provide output in JSON format."
+                        )
+                    }
                 ]
+
                 
-                # Call Together AI
                 response = self.llm.chat.completions.create(
                     model="meta-llama/Llama-Vision-Free",
                     messages=messages,
@@ -134,58 +145,53 @@ class NewsVerificationAgent:
                     top_p=0.7
                 )
 
-                # Check if response contains valid data
                 if not hasattr(response, "choices") or not response.choices:
                     return {
                         "confidence_score": 0.5,
-                        "isVerified": False,  # Add the isVerified flag
+                        "isVerified": False, 
                         "matching_details": [],
                         "discrepancies": ["Invalid LLM response structure"]
                     }
 
-                # Get the raw response content
                 verification_result = response.choices[0].message.content.strip()
 
-                # Log the response for debugging
                 print("Raw LLM Response:", verification_result)
 
-                # Ensure the response is formatted as JSON
+
                 if not verification_result.startswith("{") or not verification_result.endswith("}"):
                     if attempt < retry_count - 1:
                         print(f"Attempt {attempt + 1} failed: LLM response is not properly formatted JSON. Retrying...")
                         attempt += 1
-                        time.sleep(2)  # Wait for 2 seconds before retrying
-                        continue  # Retry the request
+                        time.sleep(2)  
+                        continue  
                     else:
                         return {
                             "confidence_score": 0.5,
-                            "isVerified": False,  # Add the isVerified flag
+                            "isVerified": False,  
                             "matching_details": [],
                             "discrepancies": ["LLM response is not properly formatted JSON"]
                         }
 
-                # Clean and parse the response
+
                 verification_result = verification_result.replace("\n", " ").strip()
 
-                # Try to parse as JSON
                 try:
                     parsed_result = json.loads(verification_result)
 
-                    # Add the isVerified flag based on confidence score
                     parsed_result["isVerified"] = parsed_result["confidence_score"] >= 0.7
                     return parsed_result
 
                 except json.JSONDecodeError as e:
-                    print("JSON Decode Error:", e)  # Debug log for JSON parsing error
+                    print("JSON Decode Error:", e) 
                     if attempt < retry_count - 1:
                         print(f"Attempt {attempt + 1} failed: JSON parsing error. Retrying...")
                         attempt += 1
-                        time.sleep(2)  # Wait for 2 seconds before retrying
-                        continue  # Retry the request
+                        time.sleep(2)  
+                        continue 
                     else:
                         return {
                             "confidence_score": 0.5,
-                            "isVerified": False,  # Add the isVerified flag
+                            "isVerified": False,
                             "matching_details": [],
                             "discrepancies": [f"JSON parsing error: {str(e)}"]
                         }
@@ -195,12 +201,12 @@ class NewsVerificationAgent:
                 if attempt < retry_count - 1:
                     print(f"Attempt {attempt + 1} failed: {str(e)}. Retrying...")
                     attempt += 1
-                    time.sleep(2)  # Wait for 2 seconds before retrying
-                    continue  # Retry the request
+                    time.sleep(2)  
+                    continue  
                 else:
                     return {
                         "confidence_score": 0.5,
-                        "isVerified": False,  # Add the isVerified flag
+                        "isVerified": False, 
                         "matching_details": [],
                         "discrepancies": [str(e)]
                     }
@@ -221,7 +227,6 @@ def verify_news_story(headline: str, description: str, source_url: str) -> Dict[
     return agent.verify_news(headline, description, source_url)
 
 
-# Example usage
 if __name__ == "__main__":
     result = verify_news_story(
         headline="Bitcoin Fails To Rise Above $98,000",
